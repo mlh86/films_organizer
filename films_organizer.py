@@ -1,7 +1,6 @@
 # films_organizer: a command-line application for organizing your films collection
 
-# Sub-commands: generate_base_index, generate_films_index, create_genres_tree, create_directors_tree, create_stars_tree
-#               generate_best_actors_index, populate_actors_tree
+# Sub-commands: generate_base_index, generate_films_index, create_films_tree, generate_actors_index, populate_actors_tree, normalize_film_names
 
 import argparse
 import glob
@@ -95,6 +94,40 @@ def generate_films_index(args_obj):
                 print("Films-index successfully generated")
 
 
+def create_films_tree(args_obj):
+    libroot = os.path.abspath(args_obj.libdir)
+    if not os.path.exists(os.path.join(libroot,"films_index.tsv")):
+        print("-> No films_index.tsv file found in the specified directory. Aborting...")
+        print("-> The generate_base_index and generate_films_index commands need to be run prior to create_* commands")
+        return
+    tree_dirname = args_obj.dirname or "Films by " + args_obj.type.capitalize()
+    tree_rootdir = os.path.join(libroot,tree_dirname)
+    if not os.path.exists(tree_rootdir):
+        os.mkdir(tree_rootdir)
+    os.chdir(tree_rootdir)
+    create_link = os.symlink if args_obj.create_symlinks else os.link
+    if os.name == 'nt' and args_obj.create_symlinks:
+        print("\nNOTE: Creating symbolic-links on Windows requires admin privileges.\n")
+    with open(os.path.join(libroot,"films_index.tsv"),'r',encoding="utf-8") as films_index_file:
+        for filmdata in films_index_file:
+            n, y, directors, genres, actors, filmpath = filmdata.strip().split("\t")
+            base_filmname = os.path.basename(filmpath)
+            if args_obj.type == 'director':
+                data = directors
+            elif args_obj.type == 'genre':
+                data = genres
+            else:
+                data = actors
+            for datum in data.split(", "):
+                if not os.path.exists(datum):
+                    os.mkdir(datum)
+                linkpath = os.path.join(datum, base_filmname)
+                if not os.path.exists(linkpath):
+                    if os.path.lexists(linkpath): # Broken symlink...
+                        os.remove(linkpath)
+                    create_link(filmpath, linkpath)
+
+
 # ------------------------ INTERNAL FUNCTIONS ------------------------
 
 def _get_url(url):
@@ -159,6 +192,13 @@ gfi_cmd = subparsers_generator.add_parser('generate_films_index', aliases=['gfi'
 gfi_cmd.set_defaults(exec_func=generate_films_index)
 gfi_cmd.add_argument('libdir', help="The root of your films library, where the index shall be placed")
 gfi_cmd.add_argument('-v','--verbose', action='store_true')
+
+cft_cmd = subparsers_generator.add_parser('create_films_tree', aliases=['cft'])
+cft_cmd.set_defaults(exec_func=create_films_tree)
+cft_cmd.add_argument('libdir', help="The root of your films library, where the folder-tree will be created")
+cft_cmd.add_argument('-t','--type', required=True, choices=['director','actor','genre'])
+cft_cmd.add_argument('--dirname', default="", help="Custom top-level directory name to use")
+cft_cmd.add_argument('--create_symlinks', action='store_true', help="Create symbolic-links instead of hard-links")
 
 args = argparser.parse_args()
 args.exec_func(args)
