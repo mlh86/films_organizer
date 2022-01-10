@@ -1,6 +1,7 @@
 # films_organizer: a command-line application for organizing your films collection
 
-# Sub-commands: generate_base_index, generate_films_index, create_films_tree, generate_actors_index, populate_actors_tree, normalize_film_names
+# Sub-commands: generate_base_index, generate_films_index, create_films_tree,
+#               generate_actors_list, generate_actors_filmography, populate_actors_tree
 
 import argparse
 import glob
@@ -128,6 +129,76 @@ def create_films_tree(args_obj):
                     create_link(filmpath, linkpath)
 
 
+def generate_actors_list(args_obj):
+    actors_list = []
+    for categ in ['actor', 'actress', 'supporting_actor', 'supporting_actress']:
+        actor_group = f"oscar_best_{categ}_nominees"
+        for start_index in [1,101,201,301]:
+            actors_list.extend(_get_imdb_actor_info(actor_group, start_index))
+    nmcodes_set = set()
+    with open(os.path.join(args_obj.libdir,"actors_list.tsv"),'w',encoding="utf-8") as actors_list_file:
+        for actor_data in actors_list:
+            if actor_data[0] not in nmcodes_set:
+                actors_list_file.write(actor_data[0]+"\t"+actor_data[1]+"\t"+actor_data[2]+"\n")
+                nmcodes_set.add(actor_data[0])
+        print("-> actors_list.tsv successfully generated")
+
+def generate_actors_filmography(args_obj):
+    actors_list = os.path.join(args_obj.libdir,"actors_list.tsv")
+    if not os.path.exists(actors_list):
+        print("Actors-list not found. Please run the generate_actors_list command.")
+        return
+    with open(os.path.join(args_obj.libdir,"actors_filmography.tsv"),'w',encoding="utf-8") as actors_filmography:
+        with open(actors_list,'r',encoding="utf-8") as actors_list:
+            for actor_data in actors_list:
+                nmcode, actor_type, actor_name = actor_data.strip().split("\t")
+                print(f"Fetching filmography for {actor_name}...")
+                filmography_string = _get_imdb_actor_filmography(nmcode, actor_type, args_obj.min_rating)
+                if filmography_string:
+                    actors_filmography.write(actor_name+"\t"+nmcode+"\t"+filmography_string+"\n")
+
+def populate_actors_tree(args_obj):
+    base_index_file = os.path.join(args_obj.libdir,"base_index.tsv")
+    filmography_file = os.path.abspath(os.path.join(args_obj.libdir,"actors_filmography.tsv"))
+    if not os.path.exists(filmography_file):
+        print("The actors filmography file could not be found. Please run the generate_actors_filmography command.")
+        return
+    if not os.path.exists(base_index_file):
+        print("The base_index.tsv file could not be found. Please run the generate_base_index command.")
+        return
+
+    films_dict = {}
+    with open(base_index_file,'r',encoding='utf-8') as base_index:
+        for film_data in base_index:
+            filmname, filmyear, filmpath = film_data.strip().split("\t")
+            films_dict[(filmyear, filmname)] = filmpath
+
+    create_link = os.symlink if args_obj.create_symlinks else os.link
+    tree_rootdir = os.path.join(args_obj.libdir,args_obj.dirname)
+    if not os.path.exists(tree_rootdir):
+        os.mkdir(tree_rootdir)
+    os.chdir(tree_rootdir)
+
+    with open(filmography_file,'r',encoding="utf-8") as actors_filmography:
+        for actor_data in actors_filmography:
+            actor_name, nmcode, filmography = actor_data.strip().split("\t")
+            films_list = filmography.split(" || ")
+            for film_data in films_list:
+                rating, fyear, fname = film_data.split("|")
+                if (fyear, fname) in films_dict:
+                    filmpath = films_dict[(fyear, fname)]
+                    base_filmname = os.path.basename(filmpath)
+                    if args_obj.include_ratings:
+                        base_filmname = "["+rating+"] "+base_filmname
+                    if not os.path.exists(actor_name):
+                        os.mkdir(actor_name)
+                    linkpath = os.path.join(actor_name, base_filmname)
+                    if not os.path.exists(linkpath):
+                        if os.path.lexists(linkpath): # Broken symlink...
+                            os.remove(linkpath)
+                        create_link(filmpath, linkpath)
+
+
 # ------------------------ INTERNAL FUNCTIONS ------------------------
 
 def _get_url(url):
@@ -173,6 +244,46 @@ def _do_imdb_search(filmname, filmyear):
     response['Actors'] = principals_data[stars_index+6:].replace('\n','').strip()
     return response
 
+def _get_imdb_actor_info(actor_group, start_index):
+    query_url = f"https://www.imdb.com/search/name/?groups={actor_group}&sort=alpha,asc&count=100&start={start_index}"
+    role = 'actress' if 'actress' in actor_group else 'actor'
+    print("Fetching next batch of actor data...")
+    actor_data = []
+    res = _get_url(query_url)
+    soup = BeautifulSoup(res.text, 'html.parser')
+    actor_blocks = soup.find_all('h3', class_='lister-item-header')
+    for block in actor_blocks:
+        a = block.find('a')
+        nmcode = a['href'].split('/')[-1]
+        name = a.text.strip()
+        actor_data.append((nmcode,role,name))
+    return actor_data
+
+def _get_imdb_actor_filmography(nmcode, actor_type, min_rating):
+    filmography_list = []
+    for page_num in range(1,4):
+        query_url = f"https://www.imdb.com/filmosearch/?page={page_num}&role={nmcode}&job_type={actor_type}&sort=user_rating,desc"
+        query_url += "&title_type=movie&explore=title_type&mode=detail"
+        res = _get_url(query_url)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        films = soup.find_all('div', class_='lister-item mode-detail')
+        for film in films:
+            heading = film.find('h3')
+            title = heading.find('a').text.strip().replace("|","")
+            year = heading.find('span', class_="lister-item-year").text[1:-1]
+            ratings_div = film.find('div', class_='ratings-bar')
+            if not ratings_div:
+                continue
+            rating = ratings_div.find('strong')
+            if not rating:
+                continue
+            rating = float(rating.text)
+            if rating >= float(min_rating):
+                filmography_list.append(str(rating)+"|"+year+"|"+title)
+        if len(filmography_list) < page_num*50:
+            break # We only move on to next page if all 50 entries on this page were good
+    return " || ".join(filmography_list)
+
 
 # ------------------------ Argparse Logic ------------------------
 
@@ -199,6 +310,22 @@ cft_cmd.add_argument('libdir', help="The root of your films library, where the f
 cft_cmd.add_argument('-t','--type', required=True, choices=['director','actor','genre'])
 cft_cmd.add_argument('--dirname', default="", help="Custom top-level directory name to use")
 cft_cmd.add_argument('--create_symlinks', action='store_true', help="Create symbolic-links instead of hard-links")
+
+gal_cmd = subparsers_generator.add_parser('generate_actors_list', aliases=['gal'])
+gal_cmd.set_defaults(exec_func=generate_actors_list)
+gal_cmd.add_argument('libdir', help="The root of your films library, where the actors list shall be placed")
+
+gaf_cmd = subparsers_generator.add_parser('generate_actors_filmography', aliases=['gaf'])
+gaf_cmd.set_defaults(exec_func=generate_actors_filmography)
+gaf_cmd.add_argument('libdir', help="The root of your films library, where the actors filmography shall be placed")
+gaf_cmd.add_argument('--min_rating', default="7.0")
+
+pat_cmd = subparsers_generator.add_parser('populate_actors_tree', aliases=['pat'])
+pat_cmd.set_defaults(exec_func=populate_actors_tree)
+pat_cmd.add_argument('libdir', help="The root of your films library, where the film-folder tree will be created")
+pat_cmd.add_argument('--dirname', default="Films by Actor", help="Custom top-level directory name to use")
+pat_cmd.add_argument('--include_ratings',action='store_true',help="Include film-rating in file-name")
+pat_cmd.add_argument('--create_symlinks', action='store_true', help="Create symbolic-links instead of hard-links")
 
 args = argparser.parse_args()
 args.exec_func(args)
