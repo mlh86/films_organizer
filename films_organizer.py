@@ -1,6 +1,6 @@
 # films_organizer: a command-line application for organizing your films collection
 
-# Sub-commands: generate_base_index, generate_films_index, create_films_tree,
+# Sub-commands: nff, generate_base_index, generate_films_index, create_films_tree,
 #               generate_actors_list, generate_actors_filmography, populate_actors_tree
 
 import argparse
@@ -13,6 +13,55 @@ from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
+
+# This function (nff) tries to convert film-names into the format '(year) filmname'
+# which is expected by the generate_base_index function. You can supply a custom
+# regex to gbi if you wish to use some other naming scheme, but year-info is
+# usually needed for exact matching on IMDB for metadata lookup.
+def normalize_film_files(args_obj):
+    libroot = os.path.abspath(args_obj.libdir)
+    extensions = {".avi",".mkv",".mp4",".m4v",".xvid",".divx"}
+    film_files = (p for p in Path(libroot).rglob("*") if p.suffix in extensions)
+    if not film_files:
+        print("No film files found under specified directory.")
+        return
+    filmname_pattern = re.compile(args_obj.regex)
+    for filepath in film_files:
+        fmatch = filmname_pattern.match(filepath.stem)
+        if fmatch:
+            continue
+        elif args_obj.regex == r"^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)" and re.search("[([]\d{4}[])]", filepath.stem):
+            m = re.search("(?P<year>[([]\d{4}[])])", filepath.stem)
+            new_stem = re.sub('\s[([]\d{4}[])]', '', filepath.stem)
+            new_stem = m.group('year') + " " + new_stem
+            abspath = os.path.abspath(filepath)
+            newpath = abspath.replace(filepath.stem, new_stem)
+            os.rename(abspath, newpath)
+        else:
+            query_url = "http://www.imdb.com/search/title?title_type=feature&" + urlencode({'title':filepath.stem})
+            res = _get_url(query_url)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            film_divs = soup.find_all('div', class_='lister-item mode-advanced')
+            abspath = os.path.abspath(filepath)
+            if args_obj.interactive and (not film_divs or len(film_divs) > 1):
+                print("No exact match found for:", abspath)
+                new_stem = input("Enter new file name with year info: ")
+                newpath = abspath.replace(filepath.stem, new_stem)
+                os.rename(abspath, newpath)
+            elif not film_divs:
+                print("No IMDB match found for:", abspath)
+            elif len(film_divs) > 1:
+                print("Multiple IMDB matches found for:", abspath)
+                print("-->", query_url)
+            else:
+                year = film_divs[0].find('span', class_="lister-item-year").text
+                if args_obj.postfix_year:
+                    new_stem = filepath.stem + " " + year
+                else:
+                    new_stem = year + " " + filepath.stem
+                newpath = abspath.replace(filepath.stem, new_stem)
+                os.rename(abspath, newpath)
+
 
 def generate_base_index(args_obj):
     libroot = os.path.abspath(args_obj.libdir)
@@ -143,6 +192,7 @@ def generate_actors_list(args_obj):
                 nmcodes_set.add(actor_data[0])
         print("-> actors_list.tsv successfully generated")
 
+
 def generate_actors_filmography(args_obj):
     actors_list = os.path.join(args_obj.libdir,"actors_list.tsv")
     if not os.path.exists(actors_list):
@@ -156,6 +206,7 @@ def generate_actors_filmography(args_obj):
                 filmography_string = _get_imdb_actor_filmography(nmcode, actor_type, args_obj.min_rating)
                 if filmography_string:
                     actors_filmography.write(actor_name+"\t"+nmcode+"\t"+filmography_string+"\n")
+
 
 def populate_actors_tree(args_obj):
     base_index_file = os.path.join(args_obj.libdir,"base_index.tsv")
@@ -287,16 +338,39 @@ def _get_imdb_actor_filmography(nmcode, actor_type, min_rating):
 
 # ------------------------ Argparse Logic ------------------------
 
-argparser = argparse.ArgumentParser(description="A command-line application for organizing your films collection")
+argparser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
+argparser.usage = "films_organizer.py"
+argparser.description = "A command-line application for organizing your films collection.\n" \
+                      + "It provides 7 sub-commands, each of which takes its own set of arguments.\n" \
+                      + "You can use the -h flag on any subcommand to get its usage details.\n\n" \
+                      + "One flow is to use the generate_base_index and the generate_films_index\n" \
+                      + "commands, followed by the create_films_tree command to create alternate\n" \
+                      + "folder-trees for your films sorted by genre, director, or starring actor.\n\n" \
+                      + "You can also use the generate_actors_list, generate_actors_filmography, and\n" \
+                      + "populate_actors_tree subcommands to construct a more thorough actor-based tree."
 subparsers_generator = argparser.add_subparsers()
 
-gbi_cmd = subparsers_generator.add_parser('generate_base_index', aliases=['gbi'])
+nff_cmd = subparsers_generator.add_parser('nff', formatter_class=argparse.RawTextHelpFormatter)
+nff_cmd.description = "Tries to normalize film-file names to the format '(year) filmname'\n" \
+                    + "by searching for a match on IMDB and extracting year-details from it."
+nff_cmd.set_defaults(exec_func=normalize_film_files)
+nff_cmd.add_argument('libdir', help="The root of your films library")
+nff_cmd.add_argument('--regex', default=r'^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)',
+                                help='The regex pattern which a normalized file should match.\n' \
+                                    +'The default is ^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)\n' \
+                                    +"which matches titles like '(1997) Titanic' and '[2009] Up'")
+nff_cmd.add_argument('--postfix_year',action='store_true')
+nff_cmd.add_argument('-i','--interactive',action='store_true')
+
+gbi_cmd = subparsers_generator.add_parser('generate_base_index', aliases=['gbi'], formatter_class=argparse.RawTextHelpFormatter)
 gbi_cmd.set_defaults(exec_func=generate_base_index)
 gbi_cmd.add_argument('libdir', help="The root of your films library, where the index shall be placed")
 gbi_cmd.add_argument('--restrict', help='The subfolder of libdir to which base-search should be limited (optional)')
 gbi_cmd.add_argument('--regex', default=r'^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)',
-                                help='The regex pattern to use to parse film-name and film-year out of path\n' \
-                                    +'The default is ^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)')
+                                help='The regex pattern to use to parse film-name and film-year out of path.\n' \
+                                    +'The default is ^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)\n' \
+									+'Examples of other regexes are ^(?P<filmname>.+)\s[([](?P<year>\d{4})[])]$\n' \
+									+'and ^(?P<filmname>.+) - (?P<year>\d{4})$')
 gbi_cmd.add_argument('--nodups', action='store_true', help="Ignore duplicate entries for the same filmname-&-year")
 
 gfi_cmd = subparsers_generator.add_parser('generate_films_index', aliases=['gfi'])
