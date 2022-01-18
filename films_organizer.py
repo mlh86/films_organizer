@@ -120,28 +120,52 @@ def generate_films_index(args_obj):
     films_count = 1
     verbose = args_obj.verbose
     libroot = os.path.abspath(args_obj.libdir)
-    if not os.path.exists(os.path.join(libroot,"base_index.tsv")):
+    base_index_path = os.path.join(libroot, "base_index.tsv")
+    films_index_path = os.path.join(libroot,"films_index.tsv")
+    faulty_films_path = os.path.join(libroot,"faulty_films_base_index.tsv")
+
+    if not os.path.exists(base_index_path):
         print("No base_index.tsv file found. Please run the generate_base_index command first.")
         return
-    with open(os.path.join(libroot,"base_index.tsv"),'r',encoding="utf-8") as base_index_file:
-        with open(os.path.join(libroot,"films_index.tsv"),'w',encoding="utf-8") as films_index_file:
-            for filmdata in base_index_file:
-                metadata = None
-                filmname, filmyear, filmpath = filmdata.split("\t")
-                if verbose:
-                    print(f"{films_count:03} - Starting metadata search for: ({filmyear}) {filmname}")
-                    films_count += 1
-                if omdb_key:
-                    metadata = _do_omdb_search(filmname, filmyear, omdb_key)
-                if not metadata:
-                    metadata = _do_imdb_search(filmname, filmyear)
-                if metadata:
-                    films_index_file.write("\t".join([filmname,filmyear,metadata['Director'],
-                                                     metadata['Genre'],metadata['Actors'],filmpath]))
-                else:
-                    print(f"-----> Could not find metadata for: ({filmyear}) {filmname}. Skipping...")
-            if not verbose:
-                print("Films-index successfully generated")
+
+    processed_films = set()
+    write_mode = "a" if args_obj.mode == 'extend' else "w"
+    if args_obj.mode == 'extend' and os.path.exists(films_index_path):
+        with open(films_index_path,'r',encoding='utf-8') as films_index:
+            print("\nNote: Extending existing films_index.tsv -- only the metadata for missing films will be looked up.\n")
+            for film_data in films_index:
+                f, y, d, g, a, filmpath = film_data.strip().split("\t")
+                processed_films.add(filmpath)
+
+    with open(base_index_path,'r', encoding="utf-8") as base_index_file:
+        with open(films_index_path, write_mode, encoding="utf-8") as films_index_file:
+            with open(faulty_films_path, 'w', encoding="utf-8") as faulty_films_file:
+                for filmdata in base_index_file:
+                    metadata = None
+                    filmname, filmyear, filmpath = filmdata.split("\t")
+                    if filmpath.strip() in processed_films:
+                        continue
+                    if verbose:
+                        print(f"{films_count:03} - Starting metadata search for: ({filmyear}) {filmname}")
+                        films_count += 1
+                    if omdb_key:
+                        metadata = _do_omdb_search(filmname, filmyear, omdb_key)
+                    if not metadata:
+                        metadata = _do_imdb_search(filmname, filmyear)
+                    if metadata:
+                        films_index_file.write("\t".join([filmname,filmyear,metadata['Director'],
+                                                         metadata['Genre'],metadata['Actors'],filmpath]))
+                    else:
+                        print(f"-----> Could not find metadata for: ({filmyear}) {filmname}. Skipping...")
+                        faulty_films_file.write("\t".join([filmname,filmyear,filmpath]))
+                if not verbose:
+                    print("\nFilms-index generated.")
+    if not os.path.getsize(faulty_films_path):
+        os.remove(faulty_films_path)
+    else:
+        print("\nCheck the faulty_films_base_index.tsv file for the list of films whose metadata could not be determined." + \
+              "\nThis is usually caused by the wrong year being associated with a film-entry or an erroneous title." + \
+              "\nYou should fix the files associated with these films and then run the gbi & gfi commands again.")
 
 
 def create_films_tree(args_obj):
@@ -259,7 +283,10 @@ def _get_url(url):
             res = requests.get(url, timeout=15)
         except Exception as e:
             if i == 2:
-                raise e
+                print(f"Could not fetch the URL ({url}).\nPlease check your internet connection.")
+                exit()
+            else:
+                print("URL Connection Failure. Retrying...")
     return res
 
 def _do_omdb_search(filmname, filmyear, omdb_key):
@@ -289,8 +316,6 @@ def _do_imdb_search(filmname, filmyear):
         director_index = principals_data.find('Directors:')+10
     else:
         director_index += 9
-    print(principals_data)
-    print(director_index, stars_index)
     response['Director'] = principals_data[director_index:stars_index].replace('\n','').strip()
     response['Actors'] = principals_data[stars_index+6:].replace('\n','').strip()
     return response
@@ -369,13 +394,14 @@ gbi_cmd.add_argument('--restrict', help='The subfolder of libdir to which base-s
 gbi_cmd.add_argument('--regex', default=r'^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)',
                                 help='The regex pattern to use to parse film-name and film-year out of path.\n' \
                                     +'The default is ^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)\n' \
-									+'Examples of other regexes are ^(?P<filmname>.+)\s[([](?P<year>\d{4})[])]$\n' \
-									+'and ^(?P<filmname>.+) - (?P<year>\d{4})$')
+                                    +'Examples of other regexes are ^(?P<filmname>.+)\s[([](?P<year>\d{4})[])]$\n' \
+                                    +'and ^(?P<filmname>.+) - (?P<year>\d{4})$')
 gbi_cmd.add_argument('--nodups', action='store_true', help="Ignore duplicate entries for the same filmname-&-year")
 
 gfi_cmd = subparsers_generator.add_parser('generate_films_index', aliases=['gfi'])
 gfi_cmd.set_defaults(exec_func=generate_films_index)
 gfi_cmd.add_argument('libdir', help="The root of your films library, where the index shall be placed")
+gfi_cmd.add_argument('-m', '--mode', action='store', choices=['extend','overwrite'], default='extend')
 gfi_cmd.add_argument('-v','--verbose', action='store_true')
 
 cft_cmd = subparsers_generator.add_parser('create_films_tree', aliases=['cft'])
