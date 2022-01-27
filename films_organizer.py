@@ -1,10 +1,14 @@
-# films_organizer: a command-line application for organizing your films collection
+"""
+films_organizer: A command-line application for organizing your films collection
 
-# Sub-commands: nff, generate_base_index, generate_films_index, create_films_tree,
-#               generate_actors_list, generate_actors_filmography, populate_actors_tree
+It offers 7 sub-commands:
+- normalize_film_files, 
+- generate_base_index, generate_films_index, create_films_tree,
+- generate_actors_list, generate_actors_filmography, populate_actors_tree
+"""
 
 import argparse
-import glob
+import sys
 import os
 import re
 import json
@@ -14,11 +18,14 @@ from urllib.parse import urlencode
 import requests
 from bs4 import BeautifulSoup
 
-# This function (nff) tries to convert film-names into the format '(year) filmname'
-# which is expected by the generate_base_index function. You can supply a custom
-# regex to gbi if you wish to use some other naming scheme, but year-info is
-# usually needed for exact matching on IMDB for metadata lookup.
+
 def normalize_film_files(args_obj):
+    """
+    This function (nff) tries to convert film-names into the format '(year) filmname'
+    which is expected by the generate_base_index function. You can supply a custom
+    regex to gbi if you wish to use some other naming scheme, but year-info is
+    usually needed for exact matching on IMDB for metadata lookup.
+    """
     libroot = os.path.abspath(args_obj.libdir)
     extensions = {".avi",".mkv",".mp4",".m4v",".xvid",".divx"}
     film_files = (p for p in Path(libroot).rglob("*") if p.suffix in extensions)
@@ -27,13 +34,12 @@ def normalize_film_files(args_obj):
         return
     filmname_pattern = re.compile(args_obj.regex)
     for filepath in film_files:
-        fmatch = filmname_pattern.match(filepath.stem)
-        if fmatch:
+        if filmname_pattern.match(filepath.stem):
             continue
-        elif args_obj.regex == r"^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)" and re.search("[([]\d{4}[])]", filepath.stem):
-            m = re.search("(?P<year>[([]\d{4}[])])", filepath.stem)
-            new_stem = re.sub('\s[([]\d{4}[])]', '', filepath.stem)
-            new_stem = m.group('year') + " " + new_stem
+        if args_obj.regex == r"^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)" and re.search(r"[([]\d{4}[])]", filepath.stem):
+            match = re.search(r"(?P<year>[([]\d{4}[])])", filepath.stem)
+            new_stem = re.sub(r'\s[([]\d{4}[])]', '', filepath.stem)
+            new_stem = match.group('year') + " " + new_stem
             abspath = os.path.abspath(filepath)
             newpath = abspath.replace(filepath.stem, new_stem)
             os.rename(abspath, newpath)
@@ -64,6 +70,15 @@ def normalize_film_files(args_obj):
 
 
 def generate_base_index(args_obj):
+    """
+    Creates an index of film files found under the user-specified libdir directory.
+
+    One can use the --restrict option to limit the search to a particular sub-directory of libdir.
+    The regex option specifies the pattern to use to parse year and title data out of a filename.
+    The default pattern matches filenames of the form "(year) title [extra-info].ext"
+    The output of this function is a 3-column base_index.tsv file, where the first
+    column is the film title, the second is the year, and the third the filepath.
+    """
     libroot = os.path.abspath(args_obj.libdir)
     filmname_pattern = re.compile(args_obj.regex)
     extensions = {".avi",".mkv",".mp4",".m4v",".xvid",".divx"}
@@ -99,9 +114,22 @@ def generate_base_index(args_obj):
 
 
 def generate_films_index(args_obj):
+    """
+    This function uses a 3-column base_index.tsv file to produce a 6-column films_index.tsv file
+
+    The 6-columns hold the title, the year, the director, the genre, the actors, and the filepath
+    for each film. The function basically tries to look-up film-data for the films contained in
+    base_index.tsv using the OMDB API. A valid OMDB API-key is required for this operation and
+    the function will prompt you for such a key. If no valid key is supplied, it falls back
+    on doing a IMDB search-&-scrape operation, which is considerably slower. It also resorts
+    to an IMDB search whenever it can't find an entry matching a film's title and year via
+    OMDB. If a match for a film can't be found on IMDB either, the function adds it to a
+    faulty_films_index.tsv for the user to examine later. Note that this function's
+    output file is meant to be used by the create_films_tree function.
+    """
     try:
-        omdb_key = open('omdb_api_key').read()
-    except:
+        omdb_key = open('omdb_api_key', encoding='utf-8').read()
+    except FileNotFoundError:
         omdb_key = input('Please enter your OMDB API key, if you wish to use the OMDB service: ')
         if omdb_key:
             test_query_url = f"http://www.omdbapi.com/?apikey={omdb_key}&i=tt0031381"
@@ -109,9 +137,9 @@ def generate_films_index(args_obj):
                 res = requests.get(test_query_url)
                 ftitle = json.loads(res.text).get("Title")
                 if ftitle == "Gone with the Wind":
-                    f = open('omdb_api_key', 'w')
-                    f.write(omdb_key)
-                    print("OMDB Key Added Successfully")
+                    with open('omdb_api_key', 'w', encoding='utf-8') as omdb_key_file:
+                        omdb_key_file.write(omdb_key)
+                        print("OMDB Key Added Successfully")
                 else:
                     raise Exception("Invalid API Key entered")
             except Exception:
@@ -134,7 +162,7 @@ def generate_films_index(args_obj):
         with open(films_index_path,'r',encoding='utf-8') as films_index:
             print("\nNote: Extending existing films_index.tsv -- only the metadata for missing films will be looked up.\n")
             for film_data in films_index:
-                f, y, d, g, a, filmpath = film_data.strip().split("\t")
+                *fdata, filmpath = film_data.strip().split("\t")
                 processed_films.add(filmpath)
 
     with open(base_index_path,'r', encoding="utf-8") as base_index_file:
@@ -169,6 +197,16 @@ def generate_films_index(args_obj):
 
 
 def create_films_tree(args_obj):
+    """
+    This function creates a tree of film-files based on a films_index.tsv file and the type-arg specified by the user.
+
+    The type argument can take on three values: director, actor, or genre, and the function proceeds to create
+    a directory such as "Fims by Genre" which it populates with sub-folders and links to the original film-files.
+    By default, it creates hard-links to the original files but the user can specify the create_symlinks option
+    to create symbolic links instead. Note that the films_index.tsv file only includes top-billed actors for
+    each film, so the "Films by Actor" tree misses supporting cast members for most films. The other
+    functions provided below by this module aim to rectify this situation.
+    """
     libroot = os.path.abspath(args_obj.libdir)
     if not os.path.exists(os.path.join(libroot,"films_index.tsv")):
         print("-> No films_index.tsv file found in the specified directory. Aborting...")
@@ -184,7 +222,7 @@ def create_films_tree(args_obj):
         print("\nNOTE: Creating symbolic-links on Windows requires admin privileges.\n")
     with open(os.path.join(libroot,"films_index.tsv"),'r',encoding="utf-8") as films_index_file:
         for filmdata in films_index_file:
-            n, y, directors, genres, actors, filmpath = filmdata.strip().split("\t")
+            *name_and_year, directors, genres, actors, filmpath = filmdata.strip().split("\t")
             base_filmname = os.path.basename(filmpath)
             if args_obj.type == 'director':
                 data = directors
@@ -203,6 +241,16 @@ def create_films_tree(args_obj):
 
 
 def generate_actors_list(args_obj):
+    """
+    Generates a TSV file containing the IMDB nmcodes for all actors nominated for an acting Oscar.
+
+    This function carries out IMDB actor-searches using four Oscar-nominated categories
+	in order to get the unique nmcodes of all decent actors, and creates a 3-column
+	actors_list.tsv file using the results. Note that users can manually edit this
+	list of about 1000 actors to insert the names and nmcodes of their own favorite
+	actors (if not already included). This file gets used by the generate_actors_filmography
+    function to generate a list of well-rated films for each actor.
+    """
     actors_list = []
     for categ in ['actor', 'actress', 'supporting_actor', 'supporting_actress']:
         actor_group = f"oscar_best_{categ}_nominees"
@@ -218,6 +266,16 @@ def generate_actors_list(args_obj):
 
 
 def generate_actors_filmography(args_obj):
+    """
+    Uses the actors_list.tsv file to generate a 3-column actors_filmography.tsv file
+
+    This function uses nmcodes from the actors_list.tsv file to find all 'good' films that the
+    actor acted in. What counts as a good film depends on the user-defined min_rating option,
+    which defaults to 7.0. The first column of the output TSV is the actor's name, the second
+    is his or her nmcode, while the third holds a "||"-separated list of film details,
+	consisting of the rating, year, and title of each film. This output file is used
+	by the populate_actors_tree function to populate a "Films by Actor" folder tree.
+    """
     actors_list = os.path.join(args_obj.libdir,"actors_list.tsv")
     if not os.path.exists(actors_list):
         print("Actors-list not found. Please run the generate_actors_list command.")
@@ -233,6 +291,15 @@ def generate_actors_filmography(args_obj):
 
 
 def populate_actors_tree(args_obj):
+    """
+    Uses actors_filmography.tsv and base_index.tsv to populate the "Films by Actor" folder-tree
+
+    This function basically iterates over the actor-data from the actors_filmography.tsv file,
+	trying to find the films from his or her filmography that are available in the local system's
+	base_index.tsv file and creating hard-links to such files under the actor's directory folder.
+	This creates a link to all of an actor's films instead of being limited to those films
+	in which he or she was top-billed.
+    """
     base_index_file = os.path.join(args_obj.libdir,"base_index.tsv")
     filmography_file = os.path.abspath(os.path.join(args_obj.libdir,"actors_filmography.tsv"))
     if not os.path.exists(filmography_file):
@@ -281,10 +348,10 @@ def _get_url(url):
     for i in range(3):
         try:
             res = requests.get(url, timeout=15)
-        except Exception as e:
+        except Exception:
             if i == 2:
                 print(f"Could not fetch the URL ({url}).\nPlease check your internet connection.")
-                exit()
+                sys.exit()
             else:
                 print("URL Connection Failure. Retrying...")
     return res
@@ -329,9 +396,9 @@ def _get_imdb_actor_info(actor_group, start_index):
     soup = BeautifulSoup(res.text, 'html.parser')
     actor_blocks = soup.find_all('h3', class_='lister-item-header')
     for block in actor_blocks:
-        a = block.find('a')
-        nmcode = a['href'].split('/')[-1]
-        name = a.text.strip()
+        atag = block.find('a')
+        nmcode = atag['href'].split('/')[-1]
+        name = atag.text.strip()
         actor_data.append((nmcode,role,name))
     return actor_data
 
@@ -365,6 +432,7 @@ def _get_imdb_actor_filmography(nmcode, actor_type, min_rating):
 
 argparser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
 argparser.usage = "films_organizer.py"
+argparser.set_defaults(exec_func=lambda args: print("Please use the -h option to see a list of sub-commands."))
 argparser.description = "A command-line application for organizing your films collection.\n" \
                       + "It provides 7 sub-commands, each of which takes its own set of arguments.\n" \
                       + "You can use the -h flag on any subcommand to get its usage details.\n\n" \
@@ -382,7 +450,7 @@ nff_cmd.set_defaults(exec_func=normalize_film_files)
 nff_cmd.add_argument('libdir', help="The root of your films library")
 nff_cmd.add_argument('--regex', default=r'^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)',
                                 help='The regex pattern which a normalized file should match.\n' \
-                                    +'The default is ^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)\n' \
+                                    +'The default is ^[([](?P<year>\\d{4})[])]\\s(?P<filmname>[^[]+)(?:\\[|$)\n' \
                                     +"which matches titles like '(1997) Titanic' and '[2009] Up'")
 nff_cmd.add_argument('--postfix_year',action='store_true')
 nff_cmd.add_argument('-i','--interactive',action='store_true')
@@ -393,9 +461,9 @@ gbi_cmd.add_argument('libdir', help="The root of your films library, where the i
 gbi_cmd.add_argument('--restrict', help='The subfolder of libdir to which base-search should be limited (optional)')
 gbi_cmd.add_argument('--regex', default=r'^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)',
                                 help='The regex pattern to use to parse film-name and film-year out of path.\n' \
-                                    +'The default is ^[([](?P<year>\d{4})[])]\s(?P<filmname>[^[]+)(?:\[|$)\n' \
-                                    +'Examples of other regexes are ^(?P<filmname>.+)\s[([](?P<year>\d{4})[])]$\n' \
-                                    +'and ^(?P<filmname>.+) - (?P<year>\d{4})$')
+                                    +'The default is ^[([](?P<year>\\d{4})[])]\\s(?P<filmname>[^[]+)(?:\\[|$)\n' \
+                                    +'Examples of other regexes are ^(?P<filmname>.+)\\s[([](?P<year>\\d{4})[])]$\n' \
+                                    +'and ^(?P<filmname>.+) - (?P<year>\\d{4})$')
 gbi_cmd.add_argument('--nodups', action='store_true', help="Ignore duplicate entries for the same filmname-&-year")
 
 gfi_cmd = subparsers_generator.add_parser('generate_films_index', aliases=['gfi'])
