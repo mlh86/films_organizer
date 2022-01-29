@@ -1,10 +1,27 @@
 """
 films_organizer: A command-line application for organizing your films collection
 
-It offers 7 sub-commands:
-- normalize_film_files, 
-- generate_base_index, generate_films_index, create_films_tree,
-- generate_actors_list, generate_actors_filmography, populate_actors_tree
+    Copyright (C) 2022  Mohammad L. Hussain
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+The program consists of 7 sub-commands, each with a 3-letter alias:
+    - normalize_film_files,
+    - generate_base_index, generate_films_index, create_films_tree,
+    - generate_actors_list, generate_actors_filmography, populate_actors_tree
+
+    Please submit any bugs or recommendations to mlh86.pk@outlook.com
 """
 
 import argparse
@@ -75,7 +92,7 @@ def generate_base_index(args_obj):
 
     One can use the --restrict option to limit the search to a particular sub-directory of libdir.
     The regex option specifies the pattern to use to parse year and title data out of a filename.
-    The default pattern matches filenames of the form "(year) title [extra-info].ext"
+    The default pattern matches filenames of the form "(year) title [optional-extra-info].ext"
     The output of this function is a 3-column base_index.tsv file, where the first
     column is the film title, the second is the year, and the third the filepath.
     """
